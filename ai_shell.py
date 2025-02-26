@@ -13,8 +13,7 @@ import shlex
 
 def clean_ai_response(ai_response):
     """
-    Extracts valid shell commands from the AI response.
-    Ensures sequential execution and handles 'echo' safely.
+    Cleans AI-generated shell commands to remove tool prefixes and ensures proper execution.
     """
 
     # List of commands allowed for execution
@@ -23,24 +22,22 @@ def clean_ai_response(ai_response):
         "cat", "echo", "git", "npm", "pip"
     ]
 
-    # If the response does not start with '!', it's not a command
-    if not ai_response.strip().startswith("!"):
-        return []
-
-    # Remove leading '!' and tool prefixes like '!file_manager'
+    # Remove leading '!'
     command_text = ai_response.lstrip("!").strip()
+
+    # Remove known tool prefixes like 'file_manager'
     tool_prefixes = ["file_manager", "web_search", "system_control"]
     for prefix in tool_prefixes:
-        command_text = command_text.replace(prefix, "").strip()
+        command_text = command_text.replace(f"!{prefix}", "").strip()
 
     # Ensure commands are executed in sequence
-    commands = command_text.split("&&")  # Split at '&&' for sequential execution
+    commands = command_text.split("&&")  # Split at '&&' to maintain order
     cleaned_commands = []
 
     for cmd in commands:
         cmd = cmd.strip()
         
-        # If there's 'echo' with redirection (">"), keep the whole command intact
+        # Preserve 'echo' with redirection (">") as-is
         if "echo" in cmd and ">" in cmd:
             cleaned_commands.append(cmd)
             continue
@@ -63,38 +60,23 @@ def clean_ai_response(ai_response):
 
 
 def execute_command(ai_response):
-    """Executes valid commands (one by one) from the AI response."""
+    """Executes valid commands from AI response."""
     commands = clean_ai_response(ai_response)
 
     if not commands:
         return "No valid commands found."
 
-    results = []
-    for cmd in commands:
-        # Special handling for 'cd' because changing directory in a subprocess won't affect our main process.
-        if cmd.startswith("cd "):
-            try:
-                target_dir = cmd.split(" ", 1)[1].strip()
-                os.chdir(target_dir)
-                results.append(f"Changed directory to: {os.getcwd()}")
-            except Exception as e:
-                results.append(f"Error changing directory: {str(e)}")
-        else:
-            try:
-                print(f"\nExecuting: {cmd}")
-                result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
-                if result.returncode == 0:
-                    # Combine stdout + stderr for clarity
-                    output = result.stdout.strip()
-                    if result.stderr.strip():
-                        output += ("\n" + result.stderr.strip())
-                    results.append(output or f"Command '{cmd}' executed successfully.")
-                else:
-                    results.append(f"Error:\n{result.stderr.strip()}")
-            except Exception as e:
-                results.append(f"Execution error: {str(e)}")
+    # Run commands sequentially in a single shell session
+    final_command = " && ".join(commands)
 
-    return "\n".join(filter(None, results))
+    try:
+        result = subprocess.run(final_command, capture_output=True, text=True, shell=True)
+        if result.returncode == 0:
+            return result.stdout.strip() or f" ^z   ^o Command '{final_command}' executed successfully."
+        else:
+            return f" ^z   ^o Error:\n{result.stderr.strip()}"
+    except Exception as e:
+        return f"Execution error: {str(e)}"
 
 def call_ollama(model_name: str, prompt: str, stream_response=True):
     """
@@ -111,14 +93,27 @@ def call_ollama(model_name: str, prompt: str, stream_response=True):
     ])
 
     system_prompt = (
-        "You are an AI OS assistant with built-in tool awareness. "
-        "Before responding, check the awareness system to see if the user command matches any registered tools.\n"
-        "Awareness System Data:\n"
+        "You are an AI OS assistant with built-in tool awareness and command execution capabilities.\n"
+        "Your role is to generate shell commands based on user requests, ensuring proper execution.\n"
+        "You have access to the following tools:\n\n"
         f"{tool_info}\n\n"
-        "If a command is found, **ONLY** respond in this format:\n"
-        "'!command_here'\n\n"
-        "If no matching tool exists, respond normally in text."
-    )
+        "### IMPORTANT RULES ###\n"
+        "1. If the user's request matches a tool command, **respond ONLY with the exact shell command**, prefixed by `!`.\n"
+        "   - Example: If the user says 'list files', respond with: `!ls`\n"
+        "   - Example: If the user says 'create a directory called test', respond with: `!mkdir test`\n\n"
+        "2. If the request involves multiple steps, combine them using `&&` and respond with **one single-line shell command**.\n"
+        "   - Example: 'Create a folder called mydir and add a file named hello.txt inside it'  ^f^r\n"
+        "     Response: `!mkdir mydir && touch mydir/hello.txt`\n\n"
+        "3. **Do NOT** return structured tool references like `[file_manager: ls]` or explanations ^`^tjust the command.\n"
+        "   - WRONG: `[file_manager: ls]`\n"
+        "   - CORRECT: `!ls`\n\n"
+        "4. If the user's request **cannot** be fulfilled with a shell command, respond in plain text instead.\n"
+        "   - Example: 'What ^`^ys the meaning of life?'  ^f^r Response: `The meaning of life is subjective...`\n\n"
+        "Always prioritize returning the correct command for execution."
+    )   
+    
+# Basically, we're formatting the response if it's a command, and if it's not, we're just returning the response as is..
+
 
     payload = {
         "model": model_name,
@@ -131,6 +126,7 @@ def call_ollama(model_name: str, prompt: str, stream_response=True):
 
     response = requests.post(url, json=payload, stream=stream_response)
     response.raise_for_status()
+
 
     full_text = []
     if stream_response:
