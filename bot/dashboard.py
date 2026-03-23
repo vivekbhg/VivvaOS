@@ -42,6 +42,16 @@ def print_status(engine: TradingEngine):
     status_text.append(f"{status['cycles']}\n")
     status_text.append(f"Total Trades: ", style="dim")
     status_text.append(f"{status['total_trades']}\n")
+    status_text.append(f"Web Signals: ", style="dim")
+    status_text.append(f"{status.get('web_signals', 0)}\n")
+
+    # Agent status
+    agents = status.get("agents", [])
+    if agents:
+        status_text.append(f"\nWeb Agents:\n", style="bold")
+        for agent in agents:
+            status_text.append(f"  {agent['name']}: ", style="dim")
+            status_text.append(f"{agent['signal_count']} signals (last: {agent['last_run']})\n")
 
     console.print(Panel(status_text, title="Bot Status", border_style="blue"))
 
@@ -98,6 +108,7 @@ def print_cycle_summary(summary: dict):
     table.add_row("Markets Scanned", str(summary["markets_scanned"]))
     table.add_row("Candidates", str(summary["candidates"]))
     table.add_row("Signals", str(summary["signals"]))
+    table.add_row("Web Signals", str(summary.get("web_signals", 0)))
     table.add_row("Trades Executed", str(summary["trades"]))
     table.add_row("Exits", str(summary["exits"]))
     table.add_row("Open Positions", str(summary["positions"]))

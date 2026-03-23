@@ -13,6 +13,8 @@ from bot.services.notifier import Notifier
 from bot.strategies.value import ValueStrategy
 from bot.strategies.momentum import MomentumStrategy
 from bot.strategies.mispricing import MispricingStrategy
+from bot.agents.orchestrator import AgentOrchestrator
+from bot.agents.base import Sentiment
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +22,12 @@ logger = logging.getLogger(__name__)
 class TradingEngine:
     """Main trading engine that runs the bot loop."""
 
-    def __init__(self):
+    def __init__(self, enable_agents: bool = True):
         self.client = PolymarketClient()
         self.scanner = MarketScanner()
         self.risk_manager = RiskManager()
         self.notifier = Notifier()
+        self.agents = AgentOrchestrator() if enable_agents else None
         self.strategies = [
             (ValueStrategy(), settings.STRATEGY_VALUE),
             (MomentumStrategy(), settings.STRATEGY_MOMENTUM),
@@ -44,6 +47,7 @@ class TradingEngine:
         logger.info(f"Max exposure: ${settings.MAX_TOTAL_EXPOSURE}")
         logger.info(f"Min edge: {settings.MIN_EDGE:.0%}")
         logger.info(f"Stop loss: {settings.STOP_LOSS:.0%} | Take profit: {settings.TAKE_PROFIT:.0%}")
+        logger.info(f"Web agents: {'ENABLED' if self.agents else 'DISABLED'}")
         logger.info("=" * 60)
 
         self.client.authenticate()
@@ -53,6 +57,8 @@ class TradingEngine:
     def stop(self):
         """Stop the engine."""
         self._running = False
+        if self.agents:
+            self.agents.stop()
         logger.info("Engine stopped")
 
     def run_cycle(self) -> dict:
@@ -71,18 +77,34 @@ class TradingEngine:
         # 2. Scan for candidates
         candidates = self.scanner.scan(markets)
 
-        # 3. Run strategies on candidates
+        # 3. Poll web agents for intelligence
+        web_signal_count = 0
+        if self.agents:
+            market_queries = [m.question for m in candidates[:20]]
+            try:
+                web_signals = self.agents.poll_all_sync(market_queries)
+                web_signal_count = len(web_signals)
+                logger.info(f"Web agents returned {web_signal_count} signals")
+            except Exception as e:
+                logger.error(f"Web agent polling failed: {e}")
+
+        # 4. Run strategies on candidates (enhanced with web intelligence)
         all_signals = []
         for market in candidates:
             orderbook = self.client.get_orderbook(market.token_id_yes)
             signals = self._run_strategies(market, orderbook)
+
+            # Boost/dampen signals based on web sentiment
+            if self.agents:
+                self._apply_web_sentiment(signals, market)
+
             all_signals.extend(signals)
 
-        # 4. Rank signals by weighted score
+        # 5. Rank signals by weighted score
         ranked = sorted(all_signals, key=lambda s: s.score, reverse=True)
-        logger.info(f"Generated {len(ranked)} signals from {len(candidates)} markets")
+        logger.info(f"Generated {len(ranked)} signals from {len(candidates)} markets (web: {web_signal_count})")
 
-        # 5. Execute top signals
+        # 6. Execute top signals
         trades_executed = 0
         for signal in ranked:
             if not self.risk_manager.can_open_position(signal):
@@ -107,7 +129,7 @@ class TradingEngine:
                     self.notifier.notify(msg)
                 ) if asyncio.get_event_loop().is_running() else None
 
-        # 6. Update existing positions & check exits
+        # 7. Update existing positions & check exits
         exits = self._check_and_execute_exits()
 
         elapsed = time.monotonic() - cycle_start
@@ -116,6 +138,7 @@ class TradingEngine:
             "markets_scanned": len(markets),
             "candidates": len(candidates),
             "signals": len(ranked),
+            "web_signals": web_signal_count,
             "trades": trades_executed,
             "exits": len(exits),
             "positions": len(self.risk_manager.positions),
@@ -145,6 +168,44 @@ class TradingEngine:
             except Exception as e:
                 logger.error(f"Strategy {strategy.name} failed on {market.question[:40]}: {e}")
         return signals
+
+    def _apply_web_sentiment(self, signals: list[Signal], market: Market):
+        """Boost or dampen strategy signals based on web agent intelligence."""
+        if not self.agents:
+            return
+
+        sentiment_data = self.agents.get_market_sentiment(market.question)
+        if sentiment_data["signal_count"] == 0:
+            return
+
+        web_sentiment = sentiment_data["sentiment"]
+        web_confidence = sentiment_data["confidence"]
+
+        for signal in signals:
+            if signal.side == Side.BUY:
+                # Buying YES or NO token
+                is_yes = signal.token_id == market.token_id_yes
+
+                if is_yes and web_sentiment in (Sentiment.BULLISH, Sentiment.VERY_BULLISH):
+                    # Web agrees: YES is likely -> boost
+                    boost = 1.0 + (web_confidence * 0.5)
+                    signal.confidence *= boost
+                    signal.reasoning += f" [WEB: {web_sentiment.value}, boosted {boost:.1f}x]"
+                elif is_yes and web_sentiment in (Sentiment.BEARISH, Sentiment.VERY_BEARISH):
+                    # Web disagrees: dampen
+                    dampen = 1.0 - (web_confidence * 0.4)
+                    signal.confidence *= max(0.1, dampen)
+                    signal.reasoning += f" [WEB: {web_sentiment.value}, dampened {dampen:.1f}x]"
+                elif not is_yes and web_sentiment in (Sentiment.BEARISH, Sentiment.VERY_BEARISH):
+                    # Buying NO and web is bearish -> boost
+                    boost = 1.0 + (web_confidence * 0.5)
+                    signal.confidence *= boost
+                    signal.reasoning += f" [WEB: {web_sentiment.value}, boosted {boost:.1f}x]"
+                elif not is_yes and web_sentiment in (Sentiment.BULLISH, Sentiment.VERY_BULLISH):
+                    # Buying NO but web is bullish -> dampen
+                    dampen = 1.0 - (web_confidence * 0.4)
+                    signal.confidence *= max(0.1, dampen)
+                    signal.reasoning += f" [WEB: {web_sentiment.value}, dampened {dampen:.1f}x]"
 
     def _execute_trade(self, signal: Signal, size_usd: float) -> bool:
         """Execute a trade from a signal."""
@@ -231,11 +292,14 @@ class TradingEngine:
         """Get full engine status."""
         portfolio = self.risk_manager.get_portfolio_summary()
         uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds() if self.start_time else 0
-        return {
+        status = {
             "running": self._running,
             "mode": "DRY RUN" if settings.DRY_RUN else "LIVE",
             "uptime_hours": round(uptime / 3600, 1),
             "cycles": self.cycle_count,
             "total_trades": self.total_trades,
+            "agents": self.agents.get_agent_status() if self.agents else [],
+            "web_signals": self.agents.signal_count if self.agents else 0,
             **portfolio,
         }
+        return status

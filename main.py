@@ -6,6 +6,7 @@ Usage:
     python main.py --live       # Run with live trading (careful!)
     python main.py --once       # Run a single cycle then exit
     python main.py --scan       # Scan markets only (no trading)
+    python main.py --no-agents  # Disable web monitoring agents
 """
 import argparse
 import logging
@@ -99,6 +100,7 @@ def main():
     parser.add_argument("--live", action="store_true", help="Enable live trading (override DRY_RUN)")
     parser.add_argument("--once", action="store_true", help="Run a single cycle")
     parser.add_argument("--scan", action="store_true", help="Scan markets only")
+    parser.add_argument("--no-agents", action="store_true", help="Disable web monitoring agents")
     args = parser.parse_args()
 
     setup_logging()
@@ -122,7 +124,7 @@ def main():
         time.sleep(5)
 
     # Initialize engine
-    engine = TradingEngine()
+    engine = TradingEngine(enable_agents=not args.no_agents)
     engine.start()
 
     # Handle graceful shutdown
