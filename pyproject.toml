@@ -1,0 +1,8 @@
+[project]
+name = "vivvaapi"
+version = "1.0.0"
+description = "Paid developer utility API service"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -1,0 +1,15 @@
+app = "vivvaapi"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+[env]
+  DATABASE_URL = "sqlite+aiosqlite:///./vivvaapi.db"
