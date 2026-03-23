@@ -1,105 +1,133 @@
-# VivvaAPI - Passive Income Developer API
+# VivvaOS - Polymarket Trading Bot
 
-A complete, deployable **paid API service** that generates recurring revenue. Developers sign up, get API keys, and pay monthly for access to useful utility endpoints.
+Automated prediction market trading bot that scans Polymarket for mispriced markets, generates signals using multiple strategies, and executes trades with built-in risk management. Runs while you sleep.
 
-## Revenue Model
+## How it works
 
-| Plan | Price | Daily Requests |
-|------|-------|----------------|
-| Free | $0/mo | 100 |
-| Pro | $9/mo | 10,000 |
-| Business | $29/mo | 100,000 |
+```
+Scan Markets → Filter Candidates → Run Strategies → Rank Signals → Execute Trades → Monitor & Exit
+     ↑                                                                                    |
+     └────────────────────── repeat every N minutes ───────────────────────────────────────┘
+```
 
-## API Endpoints
+**Three strategies run in parallel on every market:**
 
-### Text Processing
-- `POST /api/v1/text/analyze` - Word count, reading time, top words
-- `POST /api/v1/text/markdown-to-html` - Markdown to sanitized HTML
-- `POST /api/v1/text/extract` - Extract emails, URLs, phones, hashtags
-- `POST /api/v1/text/hash` - MD5, SHA1, SHA256, SHA512
-- `POST /api/v1/text/slugify` - URL-friendly slugs
-
-### Data Tools
-- `POST /api/v1/data/csv-to-json` - CSV to JSON conversion
-- `POST /api/v1/data/json-to-csv` - JSON to CSV conversion
-- `POST /api/v1/data/base64` - Base64 encode/decode
-- `POST /api/v1/data/json-diff` - Compare two JSON objects
-- `POST /api/v1/data/flatten-json` - Flatten nested JSON
-
-### Generators
-- `POST /api/v1/generate/qr-code` - QR codes as base64 PNG
-- `POST /api/v1/generate/password` - Secure random passwords
-- `POST /api/v1/generate/uuid` - UUID v4 generation
+| Strategy | What it does | Edge source |
+|----------|-------------|-------------|
+| **Value** | Compares current price to orderbook-implied fair value | Book imbalance, VWAP divergence |
+| **Momentum** | Detects directional pressure from bid/ask walls | Volume walls, activity ratio |
+| **Mispricing** | Finds markets where YES + NO != $1.00 | Underround arb, price skew |
 
 ## Quick Start
 
 ```bash
-# 1. Clone and install
+# 1. Install
 pip install -r requirements.txt
 
 # 2. Configure
 cp .env.example .env
-# Edit .env with your Stripe keys
+# Edit .env: add your PRIVATE_KEY (Polygon wallet with USDC)
 
-# 3. Run
-uvicorn app.main:app --reload
+# 3. Dry run (no real trades, just signals)
+python main.py
 
-# 4. Register and get API key
-curl -X POST http://localhost:8000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "you@example.com", "password": "secure123"}'
+# 4. Scan markets only
+python main.py --scan
 
-# 5. Use the API
-curl -X POST http://localhost:8000/api/v1/text/analyze \
-  -H "X-API-Key: vv_your_key_here" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Hello world!"}'
+# 5. Single cycle
+python main.py --once
+
+# 6. Live trading (real money!)
+python main.py --live
 ```
 
-## Deploy
+## Configuration
 
-### Render (Recommended - Free tier available)
-1. Push to GitHub
-2. Connect repo on [render.com](https://render.com)
-3. `render.yaml` auto-configures everything
-4. Add Stripe env vars in Render dashboard
+All config via `.env` (see `.env.example`):
 
-### Fly.io
 ```bash
-fly launch
-fly secrets set STRIPE_SECRET_KEY=sk_... STRIPE_WEBHOOK_SECRET=whsec_...
-fly deploy
+# Core
+PRIVATE_KEY=0x...           # Polygon wallet private key
+DRY_RUN=true                # true = paper trading, false = real money
+
+# Position sizing
+MAX_POSITION_SIZE=50        # Max USD per trade
+MAX_TOTAL_EXPOSURE=500      # Max USD across all positions
+MIN_EDGE=0.05               # Minimum 5% edge to trade
+
+# Risk management
+STOP_LOSS=0.30              # Exit at -30%
+TAKE_PROFIT=0.50            # Exit at +50%
+MAX_MARKETS=10              # Max simultaneous positions
+COOL_DOWN_MINUTES=5         # Minutes between cycles
+
+# Strategy weights (must sum to 1.0)
+STRATEGY_VALUE=0.4
+STRATEGY_MOMENTUM=0.3
+STRATEGY_MISPRICING=0.3
 ```
 
-### Docker
+## Architecture
+
+```
+main.py                     # Entry point & CLI
+bot/
+  engine.py                 # Core trading loop orchestrator
+  models.py                 # Market, Signal, Position data models
+  dashboard.py              # Rich CLI display
+  strategies/
+    base.py                 # Strategy interface
+    value.py                # Orderbook value analysis
+    momentum.py             # Volume/wall momentum detection
+    mispricing.py           # YES+NO arbitrage & skew
+  services/
+    polymarket_client.py    # Polymarket CLOB API wrapper
+    market_scanner.py       # Market filtering & candidate selection
+    risk_manager.py         # Position sizing, limits, stop-loss/TP
+    notifier.py             # Discord/Telegram alerts
+config/
+  settings.py               # Environment config loader
+```
+
+## Risk Management
+
+- **Position sizing**: Scales with signal confidence and edge magnitude
+- **Max exposure**: Hard cap on total USD deployed
+- **Stop-loss**: Auto-exits positions that drop below threshold
+- **Take-profit**: Auto-exits winners at target
+- **No duplicates**: One position per market
+- **Market filters**: Skips low-liquidity, wide-spread, and near-certain markets
+
+## Notifications
+
+Set up Discord and/or Telegram alerts for every trade:
+
 ```bash
-docker compose up -d
+# Discord
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
+# Telegram
+TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_CHAT_ID=your_chat_id
 ```
 
-### Railway / Heroku
-Uses the included `Procfile` automatically.
+## Running 24/7
 
-## Stripe Setup
+```bash
+# Docker
+docker build -t vivvaos .
+docker run -d --env-file .env --name vivvaos vivvaos
 
-1. Create a [Stripe account](https://stripe.com)
-2. Create two Products with monthly recurring prices:
-   - **Pro** - $9/month
-   - **Business** - $29/month
-3. Copy the Price IDs to your `.env`
-4. Set up a webhook endpoint pointing to `https://yourdomain.com/billing/webhook`
-   - Events: `checkout.session.completed`, `customer.subscription.deleted`
+# Or with systemd, pm2, screen, etc.
+screen -S vivvaos python main.py --live
+```
 
-## How It Makes Money
+## Prerequisites
 
-1. **Freemium funnel**: Free tier (100 req/day) gets developers hooked
-2. **Usage-based upgrade pressure**: Hit the limit? Upgrade prompt in the 429 error
-3. **Sticky by design**: Once integrated, switching costs are high
-4. **Zero marginal cost**: Text/data processing costs nothing to serve
-5. **Auto-billing**: Stripe handles recurring payments automatically
+1. Polygon wallet with USDC (for placing trades)
+2. Polymarket account connected to that wallet
+3. USDC approved for Polymarket's exchange contracts
 
-## Tech Stack
+## Disclaimer
 
-- **FastAPI** - Async Python web framework
-- **SQLite** - Zero-config database (swap to Postgres for scale)
-- **Stripe** - Payment processing
-- **Jinja2** - Landing page templates
+This bot trades real money on prediction markets. Use at your own risk. Start with DRY_RUN=true to understand the signals before going live. Past performance of any strategy does not guarantee future results.
