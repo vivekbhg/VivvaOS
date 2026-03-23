@@ -72,7 +72,12 @@ class TradingEngine:
         markets = self.client.get_markets()
         if not markets:
             logger.warning("No markets fetched, skipping cycle")
-            return {"signals": 0, "trades": 0, "exits": 0}
+            return {
+                "cycle": self.cycle_count, "markets_scanned": 0,
+                "candidates": 0, "signals": 0, "web_signals": 0,
+                "trades": 0, "exits": 0, "positions": 0,
+                "exposure": 0, "pnl": 0, "elapsed_s": 0,
+            }
 
         # 2. Scan for candidates
         candidates = self.scanner.scan(markets)

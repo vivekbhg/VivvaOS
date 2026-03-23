@@ -35,13 +35,34 @@ class PolymarketClient:
     def get_markets(self) -> list[Market]:
         """Fetch all active markets and return parsed Market objects."""
         try:
-            raw_markets = self.client.get_markets()
             markets = []
-            for m in raw_markets:
-                try:
-                    markets.append(self._parse_market(m))
-                except (KeyError, ValueError, IndexError):
-                    continue
+            next_cursor = "MA=="
+            # Paginate through all markets (API returns {data: [...], next_cursor: "..."})
+            while next_cursor:
+                resp = self.client.get_markets(next_cursor=next_cursor)
+
+                # Handle both list and paginated dict responses
+                if isinstance(resp, dict):
+                    raw_list = resp.get("data", [])
+                    next_cursor = resp.get("next_cursor", "")
+                    # Empty or "LTE=" cursor means no more pages
+                    if not next_cursor or next_cursor == "LTE=":
+                        next_cursor = ""
+                elif isinstance(resp, list):
+                    raw_list = resp
+                    next_cursor = ""
+                else:
+                    logger.warning(f"Unexpected markets response type: {type(resp)}")
+                    break
+
+                for m in raw_list:
+                    if not isinstance(m, dict):
+                        continue
+                    try:
+                        markets.append(self._parse_market(m))
+                    except (KeyError, ValueError, IndexError):
+                        continue
+
             logger.info(f"Fetched {len(markets)} markets")
             return markets
         except Exception as e:
